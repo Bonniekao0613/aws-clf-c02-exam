@@ -305,100 +305,62 @@ let timeLeft = 0;
 let examFinished = false;
 let examStartTime = null;
 
-// ===== Google Sheet API（修正 CORS） =====
+// ===== Google Sheet API =====
 const API_URL = 'https://script.google.com/a/macros/openinfosec.com/s/AKfycbx13-3dDyHKB6UO4ktwL6Lcmx5zP5RGhdAMERG79umw6-03Shwku_ttyeCLlUU9IEp2/exec';
 let cloudWrongIds = [];
 
-// ===== 修正版 API 呼叫（使用 no-cors + redirect follow）=====
-async function callAPI(action, data) {
-  try {
-    updateSyncIcon('syncing');
+// ===== 統一使用 JSONP 呼叫 API（解決所有 CORS 問題）=====
+function callAPI(action, data) {
+  return new Promise(function(resolve) {
+    var callbackName = 'jsonp_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
 
-    if (data) {
-      // POST 請求：用隱藏 form 提交 + fetch redirect
-      const formData = new URLSearchParams();
-      formData.append('action', action);
-      formData.append('payload', JSON.stringify(data));
-
-      const res = await fetch(API_URL + '?action=' + action, {
-        method: 'POST',
-        redirect: 'follow',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify(data)
-      });
-
-      const text = await res.text();
-      try {
-        const result = JSON.parse(text);
-        updateSyncIcon(result.success ? 'done' : 'error');
-        return result;
-      } catch {
-        // Google Apps Script 有時會回傳 HTML（重定向頁面）
-        // 改用 GET + 編碼資料的方式
-        return await callAPIviaGet(action, data);
-      }
-    } else {
-      // GET 請求
-      const res = await fetch(API_URL + '?action=' + action, { redirect: 'follow' });
-      const text = await res.text();
-      try {
-        const result = JSON.parse(text);
-        updateSyncIcon(result.success ? 'done' : 'error');
-        return result;
-      } catch {
-        return await callAPIviaGet(action, null);
-      }
-    }
-  } catch (e) {
-    console.warn('fetch 失敗，嘗試備用方案...', e);
-    return await callAPIviaGet(action, data);
-  }
-}
-
-// ===== 備用方案：透過動態 script 標籤（JSONP 風格）=====
-function callAPIviaGet(action, data) {
-  return new Promise((resolve) => {
-    const callbackName = 'cb_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-
-    // 設定全域回呼
+    // 設定全域回呼函式
     window[callbackName] = function(result) {
       delete window[callbackName];
       if (script.parentNode) script.parentNode.removeChild(script);
+      clearTimeout(timer);
       updateSyncIcon(result && result.success ? 'done' : 'error');
       resolve(result || { success: false });
     };
 
-    let url = API_URL + '?action=' + action + '&callback=' + callbackName;
+    // 組裝 URL
+    var url = API_URL + '?action=' + encodeURIComponent(action) + '&callback=' + callbackName;
 
+    // 如果有資料，用 GET 參數傳送
     if (data) {
       url += '&data=' + encodeURIComponent(JSON.stringify(data));
     }
 
-    const script = document.createElement('script');
+    updateSyncIcon('syncing');
+
+    // 建立 script 標籤
+    var script = document.createElement('script');
     script.src = url;
+
     script.onerror = function() {
       delete window[callbackName];
       if (script.parentNode) script.parentNode.removeChild(script);
+      clearTimeout(timer);
       updateSyncIcon('error');
-      resolve({ success: false, error: 'Script load failed' });
+      resolve({ success: false, error: 'Network error' });
     };
 
-    // 超時處理
-    setTimeout(() => {
+    // 20 秒超時
+    var timer = setTimeout(function() {
       if (window[callbackName]) {
         delete window[callbackName];
         if (script.parentNode) script.parentNode.removeChild(script);
         updateSyncIcon('error');
         resolve({ success: false, error: 'Timeout' });
       }
-    }, 15000);
+    }, 20000);
 
     document.head.appendChild(script);
   });
 }
 
 function updateSyncIcon(status) {
-  const el = document.getElementById('syncStatus');
+  var el = document.getElementById('syncStatus');
   if (!el) return;
   switch (status) {
     case 'syncing': el.textContent = '🔄 同步中...'; el.style.color = '#ff9900'; break;
@@ -409,15 +371,15 @@ function updateSyncIcon(status) {
 }
 
 async function loadCloudData() {
-  const wrongResult = await callAPI('getWrongIds');
+  var wrongResult = await callAPI('getWrongIds');
   if (wrongResult.success && wrongResult.data) {
     cloudWrongIds = wrongResult.data;
     localStorage.setItem('wrongIds', JSON.stringify(cloudWrongIds));
   }
 
-  const statsResult = await callAPI('getStats');
+  var statsResult = await callAPI('getStats');
   if (statsResult.success && statsResult.data) {
-    const stats = statsResult.data;
+    var stats = statsResult.data;
     document.getElementById('examCount').textContent = stats.totalExams;
     document.getElementById('avgScore').textContent = stats.avgScore + '%';
     document.getElementById('wrongTotal').textContent = stats.wrongCount;
@@ -425,12 +387,12 @@ async function loadCloudData() {
 }
 
 async function saveExamToCloud(correct, wrong, skip, total, percentage, pass) {
-  const timeSpent = examStartTime ? Math.round((Date.now() - examStartTime) / 1000) : 0;
+  var timeSpent = examStartTime ? Math.round((Date.now() - examStartTime) / 1000) : 0;
 
-  const details = examQuestions.map((q, i) => {
-    const ans = userAnswers[i] || [];
-    const isCorrect = ans.length === q.answer.length &&
-      [...ans].sort().join(',') === [...q.answer].sort().join(',');
+  var details = examQuestions.map(function(q, i) {
+    var ans = userAnswers[i] || [];
+    var isCorrect = ans.length === q.answer.length &&
+      ans.slice().sort().join(',') === q.answer.slice().sort().join(',');
     return {
       questionId: q.id,
       userAnswer: ans.join(','),
@@ -439,23 +401,25 @@ async function saveExamToCloud(correct, wrong, skip, total, percentage, pass) {
     };
   });
 
-  const wrongIds = [];
-  examQuestions.forEach((q, i) => {
-    const ans = userAnswers[i] || [];
+  var wrongIds = [];
+  examQuestions.forEach(function(q, i) {
+    var ans = userAnswers[i] || [];
     if (ans.length === 0) {
       wrongIds.push(q.id);
     } else {
-      const isCorrect = ans.length === q.answer.length &&
-        [...ans].sort().join(',') === [...q.answer].sort().join(',');
+      var isCorrect = ans.length === q.answer.length &&
+        ans.slice().sort().join(',') === q.answer.slice().sort().join(',');
       if (!isCorrect) wrongIds.push(q.id);
     }
   });
 
-  const result = await callAPI('saveExam', {
-    mode, total, correct, wrong, skip, percentage, pass, timeSpent, details, wrongIds
+  var result = await callAPI('saveExam', {
+    mode: mode, total: total, correct: correct, wrong: wrong,
+    skip: skip, percentage: percentage, pass: pass,
+    timeSpent: timeSpent, details: details, wrongIds: wrongIds
   });
 
-  const savedEl = document.getElementById('cloudSaved');
+  var savedEl = document.getElementById('cloudSaved');
   if (result.success) {
     savedEl.textContent = '☁️ 成績已同步到雲端';
     savedEl.style.color = '#2ecc71';
@@ -468,13 +432,13 @@ async function saveExamToCloud(correct, wrong, skip, total, percentage, pass) {
 // ===== 載入題庫 =====
 async function loadQuestions() {
   try {
-    const res = await fetch('questions.json');
+    var res = await fetch('questions.json');
     allQuestions = await res.json();
     document.getElementById('totalCount').textContent = allQuestions.length;
     document.getElementById('singleCount').textContent =
-      allQuestions.filter(q => q.type === 'single').length;
+      allQuestions.filter(function(q) { return q.type === 'single'; }).length;
     document.getElementById('multiCount').textContent =
-      allQuestions.filter(q => q.type === 'multiple').length;
+      allQuestions.filter(function(q) { return q.type === 'multiple'; }).length;
 
     await loadCloudData();
   } catch (e) {
@@ -485,10 +449,10 @@ async function loadQuestions() {
 // ===== 選單操作 =====
 function showSettings(m) {
   mode = m;
-  const panel = document.getElementById('settingsPanel');
-  const title = document.getElementById('settingsTitle');
-  const rangeRow = document.getElementById('rangeRow');
-  const timerRow = document.getElementById('timerRow');
+  var panel = document.getElementById('settingsPanel');
+  var title = document.getElementById('settingsTitle');
+  var rangeRow = document.getElementById('rangeRow');
+  var timerRow = document.getElementById('timerRow');
   panel.style.display = 'block';
 
   if (m === 'exam') {
@@ -505,7 +469,7 @@ function showSettings(m) {
     timerRow.style.display = 'flex';
   } else if (m === 'review') {
     title.textContent = '🔖 錯題複習';
-    const wrongIds = JSON.parse(localStorage.getItem('wrongIds') || '[]');
+    var wrongIds = JSON.parse(localStorage.getItem('wrongIds') || '[]');
     document.getElementById('setCount').value = wrongIds.length || 0;
     rangeRow.style.display = 'none';
     timerRow.style.display = 'none';
@@ -518,17 +482,17 @@ function hideSettings() {
 
 // ===== 開始考試 =====
 function startExam() {
-  const count = parseInt(document.getElementById('setCount').value);
-  const timer = parseInt(document.getElementById('setTimer').value) || 0;
-  let pool = [...allQuestions];
+  var count = parseInt(document.getElementById('setCount').value);
+  var timer = parseInt(document.getElementById('setTimer').value) || 0;
+  var pool = allQuestions.slice();
 
   if (mode === 'practice') {
-    const from = parseInt(document.getElementById('setFrom').value);
-    const to = parseInt(document.getElementById('setTo').value);
-    pool = allQuestions.filter(q => q.id >= from && q.id <= to);
+    var from = parseInt(document.getElementById('setFrom').value);
+    var to = parseInt(document.getElementById('setTo').value);
+    pool = allQuestions.filter(function(q) { return q.id >= from && q.id <= to; });
   } else if (mode === 'review') {
-    const wrongIds = JSON.parse(localStorage.getItem('wrongIds') || '[]');
-    pool = allQuestions.filter(q => wrongIds.includes(q.id));
+    var wrongIds = JSON.parse(localStorage.getItem('wrongIds') || '[]');
+    pool = allQuestions.filter(function(q) { return wrongIds.includes(q.id); });
     if (pool.length === 0) {
       alert('🎉 沒有錯題！你太厲害了！');
       return;
@@ -562,12 +526,12 @@ function startExam() {
 // ===== 計時器 =====
 function startTimer() {
   clearInterval(timerInterval);
-  timerInterval = setInterval(() => {
+  timerInterval = setInterval(function() {
     timeLeft--;
-    const min = Math.floor(timeLeft / 60);
-    const sec = timeLeft % 60;
-    const display = document.getElementById('timerDisplay');
-    display.textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+    var min = Math.floor(timeLeft / 60);
+    var sec = timeLeft % 60;
+    var display = document.getElementById('timerDisplay');
+    display.textContent = min + ':' + (sec < 10 ? '0' : '') + sec;
     if (timeLeft <= 300) display.classList.add('warning');
     if (timeLeft <= 0) {
       clearInterval(timerInterval);
@@ -579,22 +543,22 @@ function startTimer() {
 
 // ===== 渲染題目 =====
 function renderQuestion() {
-  const q = examQuestions[currentIndex];
+  var q = examQuestions[currentIndex];
   if (!q) return;
 
-  const badge = document.getElementById('questionBadge');
-  const typeLabel = q.type === 'multiple'
-    ? `<span class="badge badge-multi">複選題 — 請選 ${q.selectCount} 個</span>`
-    : `<span class="badge badge-single">單選題</span>`;
-  badge.innerHTML = `<span class="badge badge-num">Q${q.id}</span>${typeLabel}`;
+  var badge = document.getElementById('questionBadge');
+  var typeLabel = q.type === 'multiple'
+    ? '<span class="badge badge-multi">複選題 — 請選 ' + q.selectCount + ' 個</span>'
+    : '<span class="badge badge-single">單選題</span>';
+  badge.innerHTML = '<span class="badge badge-num">Q' + q.id + '</span>' + typeLabel;
 
   document.getElementById('questionText').textContent = q.question;
 
-  const list = document.getElementById('optionsList');
-  const saved = userAnswers[currentIndex] || [];
-  list.innerHTML = q.options.map(opt => {
-    const isSelected = saved.includes(opt.label);
-    let cls = isSelected ? 'selected' : '';
+  var list = document.getElementById('optionsList');
+  var saved = userAnswers[currentIndex] || [];
+  list.innerHTML = q.options.map(function(opt) {
+    var isSelected = saved.includes(opt.label);
+    var cls = isSelected ? 'selected' : '';
 
     if (mode === 'practice' && saved.length > 0) {
       if (q.answer.includes(opt.label)) cls = 'correct';
@@ -605,14 +569,13 @@ function renderQuestion() {
       else if (isSelected) cls = 'wrong';
     }
 
-    return `
-      <div class="option-btn ${cls}" onclick="selectOption('${opt.label}')">
-        <div class="option-label">${opt.label}</div>
-        <div class="option-text">${opt.text}</div>
-      </div>`;
+    return '<div class="option-btn ' + cls + '" onclick="selectOption(\'' + opt.label + '\')">' +
+      '<div class="option-label">' + opt.label + '</div>' +
+      '<div class="option-text">' + opt.text + '</div>' +
+      '</div>';
   }).join('');
 
-  const expBox = document.getElementById('explanationBox');
+  var expBox = document.getElementById('explanationBox');
   if ((mode === 'practice' && saved.length > 0) || examFinished) {
     if (q.explanation) {
       document.getElementById('explanationText').textContent = q.explanation;
@@ -625,11 +588,11 @@ function renderQuestion() {
   }
 
   document.getElementById('currentNum').textContent = currentIndex + 1;
-  const pct = ((currentIndex + 1) / examQuestions.length) * 100;
+  var pct = ((currentIndex + 1) / examQuestions.length) * 100;
   document.getElementById('progressFill').style.width = pct + '%';
 
   document.getElementById('prevBtn').disabled = currentIndex === 0;
-  const isLast = currentIndex === examQuestions.length - 1;
+  var isLast = currentIndex === examQuestions.length - 1;
   document.getElementById('nextBtn').style.display = isLast && !examFinished ? 'none' : 'inline-block';
   document.getElementById('submitBtn').style.display = isLast && !examFinished ? 'inline-block' : 'none';
 
@@ -644,12 +607,12 @@ function renderQuestion() {
 // ===== 選擇選項 =====
 function selectOption(label) {
   if (examFinished) return;
-  const q = examQuestions[currentIndex];
-  let saved = userAnswers[currentIndex] || [];
+  var q = examQuestions[currentIndex];
+  var saved = userAnswers[currentIndex] || [];
 
   if (q.type === 'multiple') {
     if (saved.includes(label)) {
-      saved = saved.filter(l => l !== label);
+      saved = saved.filter(function(l) { return l !== label; });
     } else {
       if (saved.length < q.selectCount) {
         saved.push(label);
@@ -665,7 +628,7 @@ function selectOption(label) {
   userAnswers[currentIndex] = saved;
 
   if (mode === 'practice') {
-    const needed = q.type === 'multiple' ? q.selectCount : 1;
+    var needed = q.type === 'multiple' ? q.selectCount : 1;
     if (saved.length === needed) {
       renderQuestion();
       return;
@@ -679,15 +642,15 @@ function prevQuestion() { if (currentIndex > 0) { currentIndex--; renderQuestion
 function nextQuestion() { if (currentIndex < examQuestions.length - 1) { currentIndex++; renderQuestion(); } }
 
 function buildGrid() {
-  const grid = document.getElementById('questionGrid');
-  grid.innerHTML = examQuestions.map((q, i) =>
-    `<div class="q-dot" id="dot-${i}" onclick="jumpTo(${i})">${q.id}</div>`
-  ).join('');
+  var grid = document.getElementById('questionGrid');
+  grid.innerHTML = examQuestions.map(function(q, i) {
+    return '<div class="q-dot" id="dot-' + i + '" onclick="jumpTo(' + i + ')">' + q.id + '</div>';
+  }).join('');
 }
 
 function updateGrid() {
-  examQuestions.forEach((q, i) => {
-    const dot = document.getElementById(`dot-${i}`);
+  examQuestions.forEach(function(q, i) {
+    var dot = document.getElementById('dot-' + i);
     if (!dot) return;
     dot.className = 'q-dot';
     if (i === currentIndex) dot.classList.add('current');
@@ -701,10 +664,10 @@ function jumpTo(i) { currentIndex = i; renderQuestion(); }
 // ===== 交卷 =====
 function submitExam() {
   if (!examFinished) {
-    const answered = Object.keys(userAnswers).filter(k => userAnswers[k].length > 0).length;
-    const total = examQuestions.length;
+    var answered = Object.keys(userAnswers).filter(function(k) { return userAnswers[k].length > 0; }).length;
+    var total = examQuestions.length;
     if (answered < total) {
-      if (!confirm(`你還有 ${total - answered} 題未作答，確定要交卷嗎？`)) return;
+      if (!confirm('你還有 ' + (total - answered) + ' 題未作答，確定要交卷嗎？')) return;
     } else {
       if (!confirm('確定要交卷嗎？')) return;
     }
@@ -713,28 +676,28 @@ function submitExam() {
   clearInterval(timerInterval);
   examFinished = true;
 
-  let correct = 0, wrong = 0, skip = 0;
-  const wrongIds = [];
+  var correct = 0, wrong = 0, skip = 0;
+  var wrongIds = [];
 
-  examQuestions.forEach((q, i) => {
-    const ans = userAnswers[i] || [];
+  examQuestions.forEach(function(q, i) {
+    var ans = userAnswers[i] || [];
     if (ans.length === 0) {
       skip++;
       wrongIds.push(q.id);
     } else {
-      const isCorrect = ans.length === q.answer.length &&
-        [...ans].sort().join(',') === [...q.answer].sort().join(',');
+      var isCorrect = ans.length === q.answer.length &&
+        ans.slice().sort().join(',') === q.answer.slice().sort().join(',');
       if (isCorrect) correct++;
       else { wrong++; wrongIds.push(q.id); }
     }
   });
 
-  const total = examQuestions.length;
-  const pct = Math.round((correct / total) * 100);
-  const pass = pct >= 70;
+  var total = examQuestions.length;
+  var pct = Math.round((correct / total) * 100);
+  var pass = pct >= 70;
 
-  const existing = JSON.parse(localStorage.getItem('wrongIds') || '[]');
-  const merged = [...new Set([...existing, ...wrongIds])];
+  var existing = JSON.parse(localStorage.getItem('wrongIds') || '[]');
+  var merged = Array.from(new Set(existing.concat(wrongIds)));
   localStorage.setItem('wrongIds', JSON.stringify(merged));
 
   saveExamToCloud(correct, wrong, skip, total, pct, pass);
@@ -742,7 +705,7 @@ function submitExam() {
   document.getElementById('examScreen').style.display = 'none';
   document.getElementById('resultScreen').style.display = 'block';
 
-  const scoreEl = document.getElementById('resultScore');
+  var scoreEl = document.getElementById('resultScore');
   scoreEl.textContent = pct + '%';
   scoreEl.className = 'result-score ' + (pass ? 'pass' : 'fail');
 
@@ -771,26 +734,26 @@ function backToMenu() {
 }
 
 function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+  var a = arr.slice();
+  for (var i = a.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var temp = a[i]; a[i] = a[j]; a[j] = temp;
   }
   return a;
 }
 
-document.addEventListener('keydown', (e) => {
+document.addEventListener('keydown', function(e) {
   if (document.getElementById('examScreen').style.display !== 'block') return;
-  const q = examQuestions[currentIndex];
+  var q = examQuestions[currentIndex];
   if (!q) return;
 
   if (e.key === 'ArrowLeft') prevQuestion();
   if (e.key === 'ArrowRight') nextQuestion();
 
-  const keyMap = { 'a':'A','b':'B','c':'C','d':'D','e':'E','f':'F',
-                   '1':'A','2':'B','3':'C','4':'D','5':'E','6':'F' };
-  const label = keyMap[e.key.toLowerCase()];
-  if (label && q.options.find(o => o.label === label)) selectOption(label);
+  var keyMap = { 'a':'A','b':'B','c':'C','d':'D','e':'E','f':'F',
+                 '1':'A','2':'B','3':'C','4':'D','5':'E','6':'F' };
+  var label = keyMap[e.key.toLowerCase()];
+  if (label && q.options.find(function(o) { return o.label === label; })) selectOption(label);
 });
 
 loadQuestions();
